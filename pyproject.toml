@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "auto-captcha"
+name = "auto-captcha-solver"
 version = "0.1.3"
 description = "Universal captcha solver for Playwright automation — hCaptcha + reCAPTCHA v2 via NopeCHA API"
 readme = "README.md"
@@ -34,12 +34,12 @@ playwright = ["playwright>=1.30.0"]
 all = ["playwright>=1.30.0"]
 
 [project.scripts]
-auto-captcha = "auto_captcha.cli:main"
+auto-captcha-solver = "auto_captcha_solver.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/interfluve-wav/auto-captcha"
-Repository = "https://github.com/interfluve-wav/auto-captcha"
-Issues = "https://github.com/interfluve-wav/auto-captcha/issues"
+Homepage = "https://github.com/interfluve-wav/auto-captcha-solver"
+Repository = "https://github.com/interfluve-wav/auto-captcha-solver"
+Issues = "https://github.com/interfluve-wav/auto-captcha-solver/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
