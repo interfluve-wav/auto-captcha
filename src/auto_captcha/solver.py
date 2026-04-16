@@ -145,7 +145,13 @@ class CaptchaSolver:
         return found
 
     def _extract_sitekey(self, url: str) -> Optional[str]:
-        match = re.search(r"[?&]k=([A-Za-z0-9_-]+)", url)
+        """Extract sitekey from iframe URL query params or fragment."""
+        # reCAPTCHA style: ?k=<sitekey>
+        match = re.search(r"[?&#]k=([A-Za-z0-9_-]+)", url)
+        if match:
+            return match.group(1)
+        # hCaptcha style: #...&sitekey=<sitekey> (in URL fragment)
+        match = re.search(r"[?&#]sitekey=([A-Za-z0-9_-]+)", url)
         return match.group(1) if match else None
 
     # ── Solving ──────────────────────────────────────────────────
