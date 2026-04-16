@@ -1,22 +1,25 @@
 # auto-captcha
 
+[![PyPI version](https://img.shields.io/pypi/v/auto-captcha)](https://pypi.org/project/auto-captcha/)
+[![Python](https://img.shields.io/pypi/pyversions/auto-captcha)](https://pypi.org/project/auto-captcha/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-blue)](#mcp-server)
+[![Hermes Skill](https://img.shields.io/badge/Hermes-Skill-gold)](#hermes-skill)
+
 Universal captcha solver for Playwright browser automation. Detects hCaptcha and reCAPTCHA v2, solves them via the NopeCHA API, and injects tokens — so your scripts never get stuck.
 
-Works as a **Python library**, **CLI tool**, **MCP server**, and **Hermes skill**.
+```
+Your script → page loads → captcha detected → NopeCHA API → token injected → continue
+```
 
 ## Install
 
 ```bash
 pip install auto-captcha
 python -m playwright install chromium
-
-# Or from source
-git clone https://github.com/interfluve-wav/auto-captcha.git
-cd auto-captcha
-pip install -e ".[all]"
 ```
 
-## Quick Start (1 line)
+## Quick Start
 
 ```python
 from auto_captcha import smart_page
@@ -63,33 +66,30 @@ from auto_captcha import CaptchaSolver
 solver = CaptchaSolver(api_key="your-key")
 
 captchas = solver.detect(page)       # [{'type': 'hcaptcha', 'sitekey': '...'}]
-token = solver.solve("hcaptcha", sitekey, url)   # CaptchaResult(success=True, token='...')
-solver.inject(page, "hcaptcha", token)
+result = solver.solve("hcaptcha", sitekey, url)   # CaptchaResult(success=True, token='...')
+solver.inject(page, "hcaptcha", result.token)
 results = solver.auto_solve(page)    # detect + solve + inject
 ```
 
 ## CLI
 
 ```bash
-# Check credits
-auto-captcha credits --key YOUR_KEY
-
-# Detect captchas
-auto-captcha detect --url https://example.com --key YOUR_KEY
-
-# Solve captchas
-auto-captcha solve --url https://example.com --key YOUR_KEY
+auto-captcha credits --key YOUR_KEY           # Check NopeCHA balance
+auto-captcha detect --url https://example.com # Detect captchas
+auto-captcha solve --url https://example.com  # Solve captchas
 ```
 
-## MCP Server (for AI agents)
+## MCP Server
 
 Works with Claude Code, OpenClaw, Cursor, and any MCP-compatible agent.
 
 ```bash
-# Add to Claude Code
 claude mcp add auto-captcha -- python -m auto_captcha.mcp_server
+```
 
-# Or configure in MCP config
+Or in your MCP config:
+
+```json
 {
   "mcpServers": {
     "auto-captcha": {
@@ -101,7 +101,7 @@ claude mcp add auto-captcha -- python -m auto_captcha.mcp_server
 }
 ```
 
-Provides three MCP tools:
+**Tools provided:**
 - `captcha_detect` — detect captchas on a URL
 - `captcha_solve` — detect and solve all captchas
 - `captcha_credits` — check NopeCHA credit balance
@@ -118,7 +118,7 @@ Copy the `hermes-skill/` directory to `~/.hermes/skills/auto-captcha/` and set `
 | hCaptcha (enterprise) | iframe + DOM | 10-40s | High |
 | reCAPTCHA v2 | iframe + DOM | 60-120s+ | Medium (queue) |
 
-**Not supported:** reCAPTCHA v3 (score-based, no challenge), Cloudflare Turnstile, FunCAPTCHA
+**Not supported:** reCAPTCHA v3, Cloudflare Turnstile, FunCAPTCHA
 
 ## Pitfalls
 
@@ -127,7 +127,7 @@ Copy the `hermes-skill/` directory to `~/.hermes/skills/auto-captcha/` and set `
 - **Headless detection** — some sites block headless; use `headless=False`
 - **Lazy-loaded captchas** — add `time.sleep()` after actions that might trigger them
 
-## NopeCHA API Key
+## Get an API Key
 
 Get free credits at [nopecha.com](https://nopecha.com). Set as environment variable:
 
