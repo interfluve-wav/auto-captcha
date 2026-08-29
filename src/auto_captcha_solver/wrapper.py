@@ -49,9 +49,18 @@ class SmartPage:
 
     def _solve_if_present(self) -> None:
         captchas = self._solver.detect(self._page)
+        useragent = self._solver._page_useragent(self._page)
+        cookies = self._solver._page_cookies(self._page)
         for cap in captchas:
             print(f"  [captcha] Detected {cap['type']} — solving...")
-            token = self._solver.solve(cap["type"], cap["sitekey"], cap["url"])
+            token = self._solver.solve(
+                cap["type"],
+                cap["sitekey"],
+                cap["url"],
+                useragent=useragent,
+                cookies=cookies,
+                data=self._solver._widget_data(self._page, cap["type"]),
+            )
             if token and token.success:
                 self._solver.inject(self._page, cap["type"], token.token)
                 print(f"  [captcha] Solved! ({len(token.token)} chars)")

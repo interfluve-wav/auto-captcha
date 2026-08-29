@@ -1,2 +1,0 @@
-auto_captcha
-auto_captcha_solver

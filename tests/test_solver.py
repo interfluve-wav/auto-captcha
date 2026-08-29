@@ -10,7 +10,7 @@ from auto_captcha_solver.types import sanitize_detect_results
 def test_version():
     from auto_captcha_solver import __version__
 
-    assert __version__ == "0.1.5"
+    assert __version__ == "0.1.6"
 
 
 def test_supported_types():
@@ -149,8 +149,8 @@ def test_auto_solve_success_flow(monkeypatch, solver):
 
     monkeypatch.setattr(solver, "detect", fake_detect)
 
-    # Stub solve() → success
-    def fake_solve(captcha_type, sitekey, url):
+    # Stub solve() → success (auto_solve calls it with keyword args)
+    def fake_solve(captcha_type, sitekey, url, **kwargs):
         res = CaptchaResult(success=True, captcha_type=captcha_type, token="tok123", attempts=1)
         solver.inject(page, captcha_type, "tok123")
         return res
