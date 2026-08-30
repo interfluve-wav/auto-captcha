@@ -68,6 +68,62 @@ def _add_browser_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_proxy_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--proxy-url",
+        default=os.environ.get("CAPTCHA_PROXY_URL", "").strip() or None,
+        help=(
+            "Full proxy URL scheme://user:pass@host:port (or set CAPTCHA_PROXY_URL). "
+            "Forwarded to the solver AND used for browser egress in local mode — "
+            "REQUIRED for Turnstile/reCAPTCHA v3 (solver IP must match browser IP)."
+        ),
+    )
+    parser.add_argument(
+        "--proxy",
+        default=os.environ.get("NOVADA_HOST", "").strip() or None,
+        help="Proxy host (combined with --proxy-port/--proxy-user/--proxy-pass or NOVADA_* env)",
+    )
+    parser.add_argument("--proxy-port", type=int, default=None, help="Proxy port (or NOVADA_PORT)")
+    parser.add_argument("--proxy-user", default=None, help="Proxy username (or NOVADA_USER)")
+    parser.add_argument("--proxy-pass", default=None, help="Proxy password (or NOVADA_PASS)")
+    parser.add_argument(
+        "--no-proxy-check",
+        action="store_false",
+        dest="verify_proxy",
+        help="Skip the pre-solve proxy egress check",
+    )
+
+
+def _build_proxy(args) -> dict | None:
+    """Resolve a proxy dict from --proxy-url or --proxy/--proxy-port/--proxy-user/--proxy-pass
+    (falling back to NOVADA_* env). Returns None when no proxy is configured."""
+    if getattr(args, "proxy_url", None):
+        from urllib.parse import urlsplit
+
+        u = urlsplit(args.proxy_url)
+        return {
+            "scheme": u.scheme or "http",
+            "host": u.hostname or "",
+            "port": int(u.port or 80),
+            "username": u.username or "",
+            "password": u.password or "",
+        }
+    host = getattr(args, "proxy", None) or os.environ.get("NOVADA_HOST", "").strip() or None
+    if not host:
+        return None
+    port = getattr(args, "proxy_port", None) or int(os.environ.get("NOVADA_PORT", "") or 0) or None
+    user = getattr(args, "proxy_user", None) or os.environ.get("NOVADA_USER", "").strip() or ""
+    pwd = getattr(args, "proxy_pass", None) or os.environ.get("NOVADA_PASS", "").strip() or ""
+    if not port:
+        raise SystemExit("--proxy-port (or NOVADA_PORT) required with --proxy")
+    d: dict = {"scheme": "http", "host": host, "port": int(port)}
+    if user:
+        d["username"] = user
+    if pwd:
+        d["password"] = pwd
+    return d
+
+
 def _browser_headers(args) -> dict[str, str] | None:
     headers: dict[str, str] = {}
     for item in getattr(args, "cdp_header", []) or []:
@@ -119,15 +175,23 @@ def main() -> None:
     solve_p.add_argument("--url", required=True, help="Page URL with captcha")
     _add_provider_args(solve_p)
     _add_browser_args(solve_p)
+    _add_proxy_args(solve_p)
     solve_p.add_argument("--timeout", type=float, default=120, help="Solve timeout in seconds")
 
     detect_p = sub.add_parser("detect", help="Detect captchas without solving")
     detect_p.add_argument("--url", required=True, help="Page URL")
     _add_provider_args(detect_p)
     _add_browser_args(detect_p)
+    _add_proxy_args(detect_p)
 
     credits_p = sub.add_parser("credits", help="Check provider credit balance")
     _add_provider_args(credits_p)
+
+    proxy_p = sub.add_parser(
+        "proxy-check",
+        help="Verify a proxy connects and show its egress IP (no API key needed)",
+    )
+    _add_proxy_args(proxy_p)
 
     args = parser.parse_args()
 
@@ -139,6 +203,26 @@ def main() -> None:
     from auto_captcha_solver.providers import resolve_api_key
     from auto_captcha_solver.types import sanitize_detect_results
 
+    proxy = _build_proxy(args) if hasattr(args, "proxy_url") else None
+
+    if args.command == "proxy-check":
+        if not proxy:
+            print(
+                "Error: no proxy configured. Pass --proxy-url or --proxy (with "
+                "--proxy-port), or set CAPTCHA_PROXY_URL / NOVADA_* env.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        from auto_captcha_solver import check_proxy_egress
+
+        try:
+            info = check_proxy_egress(proxy)
+        except RuntimeError as exc:
+            print(f"proxy-check: FAIL — {exc}")
+            sys.exit(1)
+        print(json.dumps({"ok": True, "ip": info["ip"], "country": info.get("country")}, indent=2))
+        return
+
     api_key = resolve_api_key(args.provider, args.key)
     if not api_key:
         print(
@@ -148,7 +232,7 @@ def main() -> None:
         )
         sys.exit(1)
 
-    solver = CaptchaSolver(api_key=api_key, provider=args.provider)
+    solver = CaptchaSolver(api_key=api_key, provider=args.provider, proxy=proxy)
 
     if args.command == "credits":
         credits = solver.get_credits()
@@ -167,6 +251,17 @@ def main() -> None:
         print(json.dumps(captchas, indent=2, default=str))
 
     elif args.command == "solve":
+        if proxy and getattr(args, "verify_proxy", True):
+            from auto_captcha_solver import check_proxy_egress
+
+            try:
+                info = check_proxy_egress(proxy)
+                print(f"Proxy preflight OK — egress {info['ip']} ({info.get('country')})")
+            except RuntimeError as exc:
+                print(f"Proxy preflight FAILED — {exc}")
+                print("Continuing anyway (--no-proxy-check to silence); "
+                      "Turnstile/reCAPTCHA-v3 solves will likely fail.")
+
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as p:

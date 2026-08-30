@@ -239,6 +239,11 @@ auto-captcha solve --url https://example.com --key $NOPECHA_API_KEY
 # Drive a remote/hosted browser over CDP (Browserless / Steel)
 auto-captcha solve --url https://example.com --cdp-url "https://<token>.browserless.io?token=***"
 auto-captcha detect --url https://example.com --cdp-url "wss://steel-endpoint" --cdp-header "Authorization: Bearer <token>"
+
+# Proxy (REQUIRED for Turnstile / reCAPTCHA v3 — solver IP must match browser IP)
+auto-captcha solve --url https://turnstile-page.com --proxy-url "http://user:pass@host:7777"
+auto-captcha solve --url https://turnstile-page.com            # or: --proxy/--proxy-port/--proxy-user/--proxy-pass, or NOVADA_* env
+auto-captcha proxy-check --proxy-url "http://user:pass@host:7777"   # verify proxy + show egress IP (no API key)
 ```
 
 Results are printed as formatted JSON.
