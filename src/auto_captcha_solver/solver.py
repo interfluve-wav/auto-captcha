@@ -145,8 +145,14 @@ class CaptchaSolver:
 
         if "recaptcha2" not in seen_types:
             has_recaptcha_widget = page.evaluate("""() => {
+                // Real reCAPTCHA iframes live under google.com/recaptcha, recaptcha.net,
+                // or gstatic.com/recaptcha. We must NOT match a bare 'recaptcha' substring:
+                // the hCaptcha widget iframe URL carries `recaptchacompat=true`, which
+                // would otherwise false-positive here and mis-detect a phantom reCAPTCHA.
                 return !!document.querySelector('.g-recaptcha, .g-recaptcha-response') ||
-                    document.querySelectorAll('iframe[src*="recaptcha"]').length > 0;
+                    document.querySelectorAll(
+                        'iframe[src*="google.com/recaptcha"], iframe[src*="recaptcha.net"], iframe[src*="gstatic.com/recaptcha"]'
+                    ).length > 0;
             }""")
             if has_recaptcha_widget:
                 sk = self._extract_dom_sitekey(page, "recaptcha")
@@ -163,9 +169,11 @@ class CaptchaSolver:
 
         if "recaptcha3" not in seen_types and "recaptcha2" not in seen_types:
             has_v3 = page.evaluate("""() => {
-                // Must have recaptcha script with render param, AND no visible widget
-                if (document.querySelector('.g-recaptcha, .g-recaptcha-response, iframe[src*="recaptcha"]')) return false;
-                const scripts = document.querySelectorAll('script[src*="recaptcha"]');
+                // Must have a real reCAPTCHA script/widget with render param, AND no
+                // visible widget. Match only genuine reCAPTCHA origins (not the
+                // `recaptchacompat=true` substring in hCaptcha iframe URLs).
+                if (document.querySelector('.g-recaptcha, .g-recaptcha-response, iframe[src*="google.com/recaptcha"], iframe[src*="recaptcha.net"], iframe[src*="gstatic.com/recaptcha"]')) return false;
+                const scripts = document.querySelectorAll('script[src*="google.com/recaptcha"], script[src*="recaptcha.net"], script[src*="gstatic.com/recaptcha"]');
                 for (const s of scripts) {
                     if (s.src.includes('render=')) return true;
                 }
@@ -221,9 +229,12 @@ class CaptchaSolver:
                 return cast(
                     str | None,
                     page.evaluate("""() => {
-                    let el = document.querySelector('.g-recaptcha, [data-sitekey]');
+                    // Only the reCAPTCHA widget carries its own sitekey. Do NOT fall
+                    // back to a bare [data-sitekey]: hCaptcha/Turnstile use that same
+                    // attribute, so a bare match would steal the wrong provider's key.
+                    let el = document.querySelector('.g-recaptcha[data-sitekey], .g-recaptcha');
                     if (el) return el.getAttribute('data-sitekey');
-                    for (const f of document.querySelectorAll('iframe')) {
+                    for (const f of document.querySelectorAll('iframe[src*="google.com/recaptcha"], iframe[src*="recaptcha.net"]')) {
                         const m = f.src.match(/[?&#]k=([A-Za-z0-9_-]+)/);
                         if (m) return m[1];
                     }
@@ -234,13 +245,14 @@ class CaptchaSolver:
                 return cast(
                     str | None,
                     page.evaluate(r"""() => {
-                    // reCAPTCHA v3 is loaded via grecaptcha.enterprise.execute or grecaptcha.execute
-                    const scripts = document.querySelectorAll('script[src*="recaptcha"]');
+                    // reCAPTCHA v3 is loaded via grecaptcha.execute on a real reCAPTCHA
+                    // script (only match genuine reCAPTCHA origins).
+                    const scripts = document.querySelectorAll('script[src*="google.com/recaptcha"], script[src*="recaptcha.net"], script[src*="gstatic.com/recaptcha"]');
                     for (const s of scripts) {
                         const m = s.src.match(/[?&]render=([A-Za-z0-9_-]+)/);
                         if (m) return m[1];
                     }
-                    // Check inline scripts
+                    // Check inline scripts (grecaptcha.execute is reCAPTCHA-specific)
                     for (const s of document.querySelectorAll('script')) {
                         const m = (s.textContent || '').match(/grecaptcha\.execute\(['"]([^'"]+)['"]/);
                         if (m) return m[1];
