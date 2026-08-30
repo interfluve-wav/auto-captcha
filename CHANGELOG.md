@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.6] - 2026-08-29
 
 ### Added
+- **Proxy preflight** — `check_proxy_egress()` verifies a proxy connects and reports its egress IP before any credits are spent; `proxy_server_url()` renders the Playwright/requests form. `auto_solve_url(..., verify_proxy=True)` and CLI `solve` run it automatically when a proxy is set; CLI `proxy-check` subcommand works without an API key
+- **CLI proxy support** — `solve`/`detect` accept `--proxy-url` or `--proxy`/`--proxy-port`/`--proxy-user`/`--proxy-pass` (with `CAPTCHA_PROXY_URL` / `NOVADA_*` env fallback); Turnstile/reCAPTCHA-v3 are now solvable from the command line
+- **Novada sticky sessions** — e2e runner builds the sticky-session username `USERNAME-zone-<region>-<session_id>` from `NOVADA_SESSION` (+ `NOVADA_REGION`, default `na`; ids are hyphen-stripped and capped at 8 chars per Novada's `-` auth delimiter). Needed for rotating pools; dedicated single-IP hosts leave it unset
 - **Remote / hosted browser mode (CDP)** — `auto_solve_url(..., cdp_url=...)` connects over CDP to a Browserless / Steel / any-hosted browser instead of launching one (opens a context, solves, closes the context without killing the remote session); `connect_kwargs` for handshake headers; CLI `--cdp-url` + repeatable `--cdp-header` (or `CAPTCHA_CDP_URL` env); `AutoSolveReport.browser_mode` ("local" / "cdp")
 - **Stealth helper** — `apply_stealth(context)` masks in-page headless fingerprint leaks (`navigator.webdriver`, `window.chrome`, `navigator.plugins`, WebGL vendor string, `navigator.languages`)
 - **Autopilot** — `auto_solve_url` / `auto_solve_page` turnkey one-call flow: launch headless browser, wait for late-rendering widgets, solve, inject, and report; `round_robin_rotator` + `proxy_pool` for per-session rotating proxies (browser + solver share the proxy so the token IP matches client IP)

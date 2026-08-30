@@ -104,6 +104,57 @@ def test_get_credits_failure(monkeypatch, solver):
     assert credits == 0
 
 
+def test_nopecha_body_stringifies_cookie_and_data(monkeypatch):
+    """NopeCHA docs require `cookie` and `data` as STRINGIFIED JSON in the
+    request body. Capture the JSON payload and assert the documented shape."""
+    import json as _json
+
+    captured = {}
+
+    def mock_request(method, url, headers=None, json=None, timeout=None, **kw):
+        captured["method"] = method
+        captured["body"] = json
+        return DummyResponse(200, {"data": "job-123"})
+
+    monkeypatch.setattr("auto_captcha_solver.providers.nopecha.requests.request", mock_request)
+    # max_polls=0 → submit returns immediately after the POST (no sleep).
+    s = CaptchaSolver(
+        api_key="k",
+        max_polls=0,
+        proxy={"scheme": "http", "host": "h", "port": 7777, "username": "u", "password": "p"},
+    )
+    s.solve(
+        "hcaptcha",
+        "sitekey-x",
+        "https://example.com",
+        useragent="UA/1.0",
+        cookies=[
+            {
+                "name": "a",
+                "value": "b",
+                "domain": "example.com",
+                "path": "/",
+                "expires": -1,
+            }
+        ],
+        data={"action": "submit"},
+    )
+
+    body = captured["body"]
+    # cookie + data must be JSON *strings*, not native containers (per NopeCHA
+    # docs' Turnstile example: "cookie": "[{...}]", "data": "{...}").
+    assert isinstance(body["cookie"], str)
+    parsed_cookie = _json.loads(body["cookie"])
+    assert parsed_cookie[0]["name"] == "a" and parsed_cookie[0]["domain"] == "example.com"
+    assert isinstance(body["data"], str)
+    assert _json.loads(body["data"]) == {"action": "submit"}
+    # core fields stay native
+    assert body["sitekey"] == "sitekey-x"
+    assert body["url"] == "https://example.com"
+    assert body["useragent"] == "UA/1.0"
+    assert body["proxy"]["host"] == "h"
+
+
 def test_detect_returns_empty_list_on_no_captcha(monkeypatch, solver):
     """detect() should return [] when page has no captcha elements."""
 

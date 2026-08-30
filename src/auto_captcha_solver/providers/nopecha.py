@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -145,14 +146,21 @@ class NopechaProvider(CaptchaProvider):
 
         body: dict[str, Any] = {"sitekey": sitekey, "url": url}
         if proxy:
+            # Docs show both an object {username, password, host, port, scheme}
+            # and a plain "http://user:pass@host:port" string; the object form
+            # is used in the reCAPTCHA v3 example and is what this library sends.
             body["proxy"] = proxy
         if useragent:
             body["useragent"] = useragent
+        # NopeCHA expects `cookie` and `data` as STRINGIFIED JSON (see the
+        # Turnstile example: "cookie": "[{...}]"). Sending native arrays/objects
+        # deviates from the documented contract — the API may reject the
+        # request or silently drop the field.
         normalized_cookies = _normalize_cookies(cookies)
         if normalized_cookies:
-            body["cookie"] = normalized_cookies
+            body["cookie"] = json.dumps(normalized_cookies)
         if data:
-            body["data"] = data
+            body["data"] = json.dumps(data)
 
         status, resp = self._api(endpoint, "POST", body)
         if status != 200 or not resp.get("data"):

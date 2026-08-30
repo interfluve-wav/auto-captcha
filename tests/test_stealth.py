@@ -95,8 +95,13 @@ def test_solve_forwards_useragent_and_cookies(monkeypatch):
     assert result.success
     assert result.token == "SOLVED_TOKEN"
     assert captured.body["useragent"] == "Mozilla/5.0 (Macintosh) TestUA"
-    assert captured.body["cookie"][0]["name"] == "sid"
-    assert captured.body["data"] == {"rqdata": "rq_abc"}
+    # NopeCHA docs require cookie/data as STRINGIFIED JSON.
+    import json as _json
+
+    assert isinstance(captured.body["cookie"], str)
+    assert _json.loads(captured.body["cookie"])[0]["name"] == "sid"
+    assert isinstance(captured.body["data"], str)
+    assert _json.loads(captured.body["data"]) == {"rqdata": "rq_abc"}
     assert captured.body["sitekey"] == "sitekey-1"
 
 
