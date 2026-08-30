@@ -19,30 +19,40 @@ DEFAULT_URL = "https://accounts.hcaptcha.com/demo"
 
 # Novada auth delimiter is '-', so no segment value may contain a hyphen.
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+_ZONE_RE = re.compile(r"(-zone-(res|isp|dcp|mob))")
 
 
 def _sticky_username(base_user: str, zone: str, region: str, session: str, sess_time: int) -> str:
     """Build a Novada sticky-session username.
 
     Grammar (developer.novada.com, rotating residential → session-type):
-        USERNAME-zone-<zone>[-region-XX][-city-CITY]-session-<id>[-sessTime-<N>]
+        USERNAME-zone-<zone>[-region-XX][-city-CITY]-session-<id>-sessTime-<N>
+
+    ``base_user`` may already carry the zone — the dashboard's Endpoint Output
+    List emits usernames like ``novadaXXXX-zone-res``. In that case the zone is
+    never duplicated; only ``-session-<id>-sessTime-<N>`` (and an optional
+    ``-region-XX`` inserted right after the zone) is appended.
 
     - ``zone``  is the PRODUCT zone: ``res`` (residential), ``isp``, ``dcp``,
-      ``mob``. NOT a region — the ``.na.`` in an account host is the host's
-      region and never appears in the username.
+      ``mob``. Only used when ``base_user`` has no zone yet. NOT a region —
+      the ``.na.`` in an account host is the host's region, never a username.
     - ``region`` is an optional 2-letter country code (``us`` etc.).
     - ``session`` must be alphanumeric/underscore, no hyphens, <= 64 chars.
-    - ``sessTime`` is the TTL in minutes (default 5 for res, max 120). Set to
-      the max when the browser outlives a short session (a rotated IP breaks
-      the captcha token's IP binding).
+    - ``sessTime`` is the TTL in minutes (max 120 for res). Use the max when
+      the browser outlives a short session (a rotated IP breaks the captcha
+      token's IP binding).
     """
-    parts = [base_user, f"zone-{zone}"]
-    if region:
-        parts.append(f"region-{region}")
-    if session:
-        parts.append(f"session-{session}")
-        parts.append(f"sessTime-{sess_time}")
-    return "-".join(parts)
+    m = _ZONE_RE.search(base_user)
+    if m:
+        base = base_user
+        if region and f"-region-{region}" not in base:
+            # insert the region segment right after the zone
+            base = base[: m.end()] + f"-region-{region}" + base[m.end():]
+    else:
+        base = f"{base_user}-zone-{zone}"
+        if region:
+            base += f"-region-{region}"
+    return f"{base}-session-{session}-sessTime-{sess_time}"
 
 
 def proxy_from_env() -> dict[str, Any] | None:
