@@ -36,6 +36,8 @@ __all__ = [
     "auto_solve_url",
     "wait_for_captchas",
     "round_robin_rotator",
+    "proxy_server_url",
+    "check_proxy_egress",
 ]
 
 Proxy = dict[str, Any]
@@ -80,6 +82,79 @@ def round_robin_rotator(proxies: Sequence[Proxy]) -> ProxyRotator:
         return proxy
 
     return _rotate
+
+
+def proxy_server_url(proxy: Proxy) -> str:
+    """Render a Playwright/requests proxy as ``scheme://user:pass@host:port``."""
+    scheme = proxy.get("scheme", "http")
+    host = proxy.get("host", "")
+    port = proxy.get("port", "")
+    auth = ""
+    if proxy.get("username") or proxy.get("password"):
+        auth = f"{proxy.get('username', '')}:{proxy.get('password', '')}@"
+    return f"{scheme}://{auth}{host}:{port}"
+
+
+def check_proxy_egress(
+    proxy: Proxy,
+    url: str = "https://api.ipify.org",
+    timeout: float = 20.0,
+) -> dict[str, Any]:
+    """Verify a proxy works and report its egress IP.
+
+    Send a request THROUGH the proxy to an IP-echo endpoint and parse the
+    answer. Use this before a Turnstile/reCAPTCHA-v3 solve: NopeCHA requires
+    the solver's exit IP to match the browser's, so a dead or wrong proxy
+    shows up later as a queue-level 'Invalid request' — catching it here is
+    far cheaper.
+
+    Args:
+        proxy: Proxy dict (scheme/host/port/username/password).
+        url: IP-echo endpoint to fetch through the proxy.
+        timeout: Request timeout in seconds.
+
+    Returns:
+        ``{"ok": True, "ip": str, "country": str|None, "raw": str}`` on
+        success.
+
+    Raises:
+        RuntimeError: if the proxy connection or the echo fetch fails (bad
+            creds, blocked network, dead endpoint). The message never contains
+            credentials.
+    """
+    import json as _json
+
+    import requests
+
+    server = proxy_server_url(proxy)
+    proxies = {"http": server, "https": server}
+    try:
+        r = requests.get(url, proxies=proxies, timeout=timeout)
+    except requests.exceptions.RequestException as exc:
+        host = proxy.get("host", "?")
+        raise RuntimeError(
+            f"proxy egress check failed for {host}: {type(exc).__name__}: {exc}"
+        ) from exc
+    if r.status_code != 200:
+        raise RuntimeError(
+            f"proxy egress check got HTTP {r.status_code} from {url} "
+            "(proxy may be rejecting auth)"
+        )
+    ip: str | None = None
+    country: str | None = None
+    raw = r.text.strip()[:300]
+    # ipinfo-style JSON first, then bare-IP responses.
+    try:
+        data = _json.loads(r.text)
+        ip = data.get("ip")
+        country = data.get("country")
+    except Exception:
+        parts = raw.split()
+        if parts and parts[0].count(".") == 3:
+            ip = parts[0]
+    if not ip:
+        raise RuntimeError(f"proxy egress check: could not parse IP from {raw!r}")
+    return {"ok": True, "ip": ip, "country": country, "raw": raw}
 
 
 def wait_for_captchas(
@@ -219,6 +294,7 @@ def auto_solve_url(
     launch_kwargs: dict[str, Any] | None = None,
     cdp_url: str | None = None,
     connect_kwargs: dict[str, Any] | None = None,
+    verify_proxy: bool = True,
     solver_kwargs: dict[str, Any] | None = None,
 ) -> AutoSolveReport:
     """Self-contained: launch a browser, load a URL, solve every captcha, report.
@@ -276,6 +352,19 @@ def auto_solve_url(
     session_proxy = proxy
     if rotator is not None:
         session_proxy = rotator() or proxy
+
+    if session_proxy and verify_proxy:
+        # Preflight: prove the proxy connects and show its egress IP BEFORE
+        # spending credits. For Turnstile/reCAPTCHA-v3 the solver's exit IP
+        # must match the browser's — a dead proxy here becomes a queue-level
+        # 'Invalid request' later. Output never contains credentials.
+        try:
+            info = check_proxy_egress(session_proxy)
+            print(f"Proxy preflight OK — egress {info['ip']} ({info['country']})")
+        except RuntimeError as exc:
+            print(f"Proxy preflight FAILED — {exc}")
+            print("Continuing anyway (set verify_proxy=False to silence this); "
+                  "Turnstile/reCAPTCHA-v3 solves will likely fail.")
 
     try:
         from playwright.sync_api import sync_playwright

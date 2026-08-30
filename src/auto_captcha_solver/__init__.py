@@ -4,6 +4,8 @@ from .autopilot import (
     AutoSolveReport,
     auto_solve_page,
     auto_solve_url,
+    check_proxy_egress,
+    proxy_server_url,
     round_robin_rotator,
     wait_for_captchas,
 )
@@ -26,4 +28,6 @@ __all__ = [
     "auto_solve_url",
     "wait_for_captchas",
     "round_robin_rotator",
+    "proxy_server_url",
+    "check_proxy_egress",
 ]

@@ -223,6 +223,123 @@ def test_auto_solve_page_no_retry_on_non_transient():
     assert calls["n"] == 1
 
 
+# ── proxy helpers ─────────────────────────────────────────────────────
+
+
+def test_proxy_server_url_with_auth():
+    from auto_captcha_solver import proxy_server_url
+
+    url = proxy_server_url(
+        {"scheme": "http", "host": "h", "port": 7777, "username": "u", "password": "p"}
+    )
+    assert url == "http://u:p@h:7777"
+
+
+def test_proxy_server_url_without_auth():
+    from auto_captcha_solver import proxy_server_url
+
+    assert proxy_server_url({"scheme": "socks5", "host": "h", "port": 1080}) == "socks5://h:1080"
+
+
+def test_check_proxy_egress_parses_bare_ip(monkeypatch):
+    import auto_captcha_solver.autopilot as ap
+
+    class R:
+        status_code = 200
+        text = "203.0.113.7"
+
+    monkeypatch.setattr("requests.get", lambda *a, **k: R())
+    out = ap.check_proxy_egress({"host": "h", "port": 1})
+    assert out["ok"] and out["ip"] == "203.0.113.7"
+
+
+def test_check_proxy_egress_parses_json(monkeypatch):
+    import json
+
+    import auto_captcha_solver.autopilot as ap
+
+    class R:
+        status_code = 200
+        text = json.dumps({"ip": "198.51.100.9", "country": "US"})
+
+    monkeypatch.setattr("requests.get", lambda *a, **k: R())
+    out = ap.check_proxy_egress({"host": "h", "port": 1})
+    assert out["ip"] == "198.51.100.9" and out["country"] == "US"
+
+
+def test_check_proxy_egress_raises_on_http_error(monkeypatch):
+    import auto_captcha_solver.autopilot as ap
+
+    class R:
+        status_code = 407
+        text = "Proxy Authentication Required"
+
+    monkeypatch.setattr("requests.get", lambda *a, **k: R())
+    try:
+        ap.check_proxy_egress({"host": "h", "port": 1})
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as e:
+        assert "407" in str(e)
+
+
+def test_check_proxy_egress_raises_on_network(monkeypatch):
+    import requests as _requests
+
+    import auto_captcha_solver.autopilot as ap
+
+    def boom(*a, **k):
+        raise _requests.exceptions.ConnectionError("no route")
+
+    monkeypatch.setattr("requests.get", boom)
+    try:
+        ap.check_proxy_egress({"host": "h", "port": 1})
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as e:
+        assert "no route" in str(e)
+        assert "u:" not in str(e)  # never leak creds
+
+
+def test_auto_solve_url_runs_proxy_preflight(monkeypatch):
+    """With a proxy set, auto_solve_url must run the egress preflight (and
+    still solve). Patch check_proxy_egress to record the call."""
+    from auto_captcha_solver import auto_solve_url
+
+    calls: dict = {}
+    _install_fake_playwright(monkeypatch, calls)
+
+    from auto_captcha_solver import autopilot
+
+    def fake_check(proxy, **k):
+        calls["preflight"] = proxy
+        return {"ok": True, "ip": "203.0.113.9", "country": "US", "raw": ""}
+
+    monkeypatch.setattr(autopilot, "check_proxy_egress", fake_check)
+    proxy = {"scheme": "http", "host": "h", "port": 7777, "username": "u", "password": "p"}
+    report = auto_solve_url("https://x", api_key="k", proxy=proxy, max_wait_sec=0.0, humanize=False)
+    assert report.proxy == proxy
+    assert calls["preflight"] == proxy
+
+
+def test_auto_solve_url_skips_preflight_when_disabled(monkeypatch):
+    from auto_captcha_solver import auto_solve_url
+
+    calls: dict = {}
+    _install_fake_playwright(monkeypatch, calls)
+
+    from auto_captcha_solver import autopilot
+
+    def fake_check(proxy, **k):
+        calls["preflight"] = proxy
+        return {"ok": True, "ip": "1.2.3.4", "country": None, "raw": ""}
+
+    monkeypatch.setattr(autopilot, "check_proxy_egress", fake_check)
+    proxy = {"scheme": "http", "host": "h", "port": 7777}
+    auto_solve_url(
+        "https://x", api_key="k", proxy=proxy, verify_proxy=False, max_wait_sec=0.0, humanize=False
+    )
+    assert "preflight" not in calls
+
+
 # ── auto_solve_url browser mode (local vs CDP) ─────────────────────────
 
 
