@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 from typing import Any
 
@@ -36,10 +35,21 @@ ERROR_MESSAGES = {
 }
 
 
-def describe_error(code: Any, message: str | None = None) -> str:
-    """Human-readable description for a NopeCHA error code."""
+def describe_error(code: Any, message: str | None = None, type_: str | None = None) -> str:
+    """Human-readable description of a NopeCHA error.
+
+    The error body carries ``code`` + ``message`` + an optional diagnostic
+    ``type`` string describing the nature of the failure (e.g. ``"Invalid
+    type"``, ``"Invalid proxy"``). All three are surfaced so callers can
+    diagnose without re-reading raw responses.
+    """
     known = ERROR_MESSAGES.get(code)
-    detail = f" ({message})" if message else ""
+    parts: list[str] = []
+    if message and message != known:
+        parts.append(message)
+    if type_:
+        parts.append(f"type={type_}")
+    detail = f" ({', '.join(parts)})" if parts else ""
     return f"{known or f'error {code}'}{detail}"
 
 
@@ -146,28 +156,30 @@ class NopechaProvider(CaptchaProvider):
 
         body: dict[str, Any] = {"sitekey": sitekey, "url": url}
         if proxy:
-            # Docs show both an object {username, password, host, port, scheme}
-            # and a plain "http://user:pass@host:port" string; the object form
-            # is used in the reCAPTCHA v3 example and is what this library sends.
+            # Docs: proxy is an OBJECT {scheme, host, port, username, password}
+            # (port int or str). Required for turnstile; credentials only make
+            # sense for http/https schemes (NopeCHA ignores them for socks4/5).
             body["proxy"] = proxy
         if useragent:
             body["useragent"] = useragent
-        # NopeCHA expects `cookie` and `data` as STRINGIFIED JSON (see the
-        # Turnstile example: "cookie": "[{...}]"). Sending native arrays/objects
-        # deviates from the documented contract — the API may reject the
-        # request or silently drop the field.
+        # Docs: `cookie` is an ARRAY of cookie objects and `data` is a native
+        # object (see nopecha.com/api-reference + /formatting/cookie). Send
+        # native JSON — never stringified.
         normalized_cookies = _normalize_cookies(cookies)
         if normalized_cookies:
-            body["cookie"] = json.dumps(normalized_cookies)
+            body["cookie"] = normalized_cookies
         if data:
-            body["data"] = json.dumps(data)
+            body["data"] = data
 
         status, resp = self._api(endpoint, "POST", body)
         if status != 200 or not resp.get("data"):
             if resp.get("error") == "network":
                 error = f"submit failed (network): {resp.get('message', '')}"
             else:
-                error = f"submit failed: {describe_error(resp.get('error'), resp.get('message'))}"
+                # The error body carries a diagnostic `type` field describing
+                # the nature of the failure (e.g. "Invalid type", "Invalid
+                # proxy") — surface it so misdiagnosis is visible.
+                error = f"submit failed: {describe_error(resp.get('error'), resp.get('message'), resp.get('type'))}"
             return CaptchaResult(
                 success=False,
                 captcha_type=captcha_type,
@@ -194,7 +206,7 @@ class NopechaProvider(CaptchaProvider):
                 return CaptchaResult(
                     success=False,
                     captcha_type=captcha_type,
-                    error=describe_error(err, result.get("message")),
+                    error=describe_error(err, result.get("message"), result.get("type")),
                     attempts=attempt + 1,
                     elapsed_sec=time.time() - start,
                 )

@@ -78,7 +78,7 @@ with smart_page(api_key="your-key") as page:
 | hCaptcha (enterprise) | `/v1/token/hcaptcha` | Working |
 | reCAPTCHA v2 | `/v1/token/recaptcha2` | Works but queue can be slow |
 | reCAPTCHA v3 | `/v1/token/recaptcha3` | Working (needs `data.action`) |
-| Cloudflare Turnstile | `/v1/token/turnstile` | Working **with a proxy** — solver exit IP must match browser IP; use `check_proxy_egress()` / CLI `proxy-check` to verify first. Note: NopeCHA docs require `cookie`/`data` as stringified JSON (handled by the provider). |
+| Cloudflare Turnstile | `/v1/token/turnstile` | Working **with a proxy** — proxy is **Required** in NopeCHA's schema for this endpoint (solver exit IP must match browser IP); `check_proxy_egress()` / CLI `proxy-check` verify first. Error 10 bodies carry a diagnostic `type` field, now surfaced in the error string. |
 
 ## Stealth & Context Cloning (v0.1.6)
 

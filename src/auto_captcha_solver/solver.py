@@ -304,15 +304,27 @@ class CaptchaSolver:
             data: Captcha-type metadata (reCAPTCHA v3 ``action``/``s``/``theme``/
                 ``enterprise``; Turnstile ``action``/``cdata``).
         """
-        if captcha_type == "turnstile" and not self.proxy:
-            import warnings
+        if captcha_type == "turnstile":
+            if not self.proxy:
+                return CaptchaResult(
+                    success=False,
+                    captcha_type=captcha_type,
+                    error=(
+                        "turnstile requires a proxy: NopeCHA's schema marks proxy "
+                        "Required for this endpoint (the solver's exit IP must match "
+                        "the client's). Pass CaptchaSolver(proxy={...})."
+                    ),
+                )
+            if self.proxy.get("username") or self.proxy.get("password"):
+                scheme = self.proxy.get("scheme", "http")
+                if scheme not in ("http", "https"):
+                    import warnings
 
-            warnings.warn(
-                "Solving Turnstile without a proxy: NopeCHA requires the solver IP "
-                "to match the client IP, so Cloudflare will very likely invalidate "
-                "the token. Pass proxy=... matching your browser's egress IP.",
-                stacklevel=2,
-            )
+                    warnings.warn(
+                        f"proxy scheme '{scheme}' ignores username/password; "
+                        "NopeCHA only supports proxy auth for http/https.",
+                        stacklevel=2,
+                    )
         return self._provider.solve(
             captcha_type,
             sitekey,

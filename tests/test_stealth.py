@@ -95,13 +95,11 @@ def test_solve_forwards_useragent_and_cookies(monkeypatch):
     assert result.success
     assert result.token == "SOLVED_TOKEN"
     assert captured.body["useragent"] == "Mozilla/5.0 (Macintosh) TestUA"
-    # NopeCHA docs require cookie/data as STRINGIFIED JSON.
-    import json as _json
-
-    assert isinstance(captured.body["cookie"], str)
-    assert _json.loads(captured.body["cookie"])[0]["name"] == "sid"
-    assert isinstance(captured.body["data"], str)
-    assert _json.loads(captured.body["data"]) == {"rqdata": "rq_abc"}
+    # NopeCHA docs: cookie is a native array, data a native object.
+    assert isinstance(captured.body["cookie"], list)
+    assert captured.body["cookie"][0]["name"] == "sid"
+    assert isinstance(captured.body["data"], dict)
+    assert captured.body["data"] == {"rqdata": "rq_abc"}
     assert captured.body["sitekey"] == "sitekey-1"
 
 
@@ -118,20 +116,21 @@ def test_solve_omits_optional_fields_when_absent(monkeypatch):
     assert "proxy" not in captured.body
 
 
-def test_turnstile_without_proxy_warns(monkeypatch):
-    import warnings
-
+def test_turnstile_without_proxy_fails_fast(monkeypatch):
+    """NopeCHA's schema marks proxy REQUIRED for turnstile — we fail fast
+    with a clear result instead of warning and submitting a doomed job."""
     captured = _Captured()
     _mock_provider(monkeypatch, captured)
     solver = CaptchaSolver(api_key="k", poll_interval=0.0, max_polls=2, timeout_sec=5.0)
 
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        solver.solve("turnstile", "sk", "https://example.com")
-    assert any("proxy" in str(x.message).lower() for x in w)
+    result = solver.solve("turnstile", "sk", "https://example.com")
+    assert not result.success
+    assert "requires a proxy" in result.error
+    # nothing was submitted to the API
+    assert not captured.body
 
 
-def test_turnstile_with_proxy_no_warn(monkeypatch):
+def test_turnstile_with_proxy_proceeds(monkeypatch):
     import warnings
 
     captured = _Captured()
@@ -146,7 +145,8 @@ def test_turnstile_with_proxy_no_warn(monkeypatch):
 
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
-        solver.solve("turnstile", "sk", "https://example.com")
+        result = solver.solve("turnstile", "sk", "https://example.com")
+    assert result.success
     assert not any("proxy" in str(x.message).lower() for x in w)
     assert captured.body["proxy"]["host"] == "1.2.3.4"
 
