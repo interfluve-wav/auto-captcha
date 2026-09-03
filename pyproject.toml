@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-captcha-solver"
-version = "0.1.5"
+version = "0.1.6"
 description = "Universal captcha solver for Playwright automation — hCaptcha, reCAPTCHA v2/v3, and Cloudflare Turnstile via NopeCHA API"
 readme = "README.md"
 license = {text = "MIT"}
@@ -68,6 +68,7 @@ Changelog = "https://github.com/interfluve-wav/auto-captcha-solver/blob/main/CHA
 
 [tool.setuptools.packages.find]
 where = ["src"]
+exclude = ["auto_captcha", "auto_captcha.*"]
 
 [tool.ruff]
 line-length = 100

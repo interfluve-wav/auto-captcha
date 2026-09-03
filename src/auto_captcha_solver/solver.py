@@ -145,8 +145,14 @@ class CaptchaSolver:
 
         if "recaptcha2" not in seen_types:
             has_recaptcha_widget = page.evaluate("""() => {
+                // Real reCAPTCHA iframes live under google.com/recaptcha, recaptcha.net,
+                // or gstatic.com/recaptcha. We must NOT match a bare 'recaptcha' substring:
+                // the hCaptcha widget iframe URL carries `recaptchacompat=true`, which
+                // would otherwise false-positive here and mis-detect a phantom reCAPTCHA.
                 return !!document.querySelector('.g-recaptcha, .g-recaptcha-response') ||
-                    document.querySelectorAll('iframe[src*="recaptcha"]').length > 0;
+                    document.querySelectorAll(
+                        'iframe[src*="google.com/recaptcha"], iframe[src*="recaptcha.net"], iframe[src*="gstatic.com/recaptcha"]'
+                    ).length > 0;
             }""")
             if has_recaptcha_widget:
                 sk = self._extract_dom_sitekey(page, "recaptcha")
@@ -163,9 +169,11 @@ class CaptchaSolver:
 
         if "recaptcha3" not in seen_types and "recaptcha2" not in seen_types:
             has_v3 = page.evaluate("""() => {
-                // Must have recaptcha script with render param, AND no visible widget
-                if (document.querySelector('.g-recaptcha, .g-recaptcha-response, iframe[src*="recaptcha"]')) return false;
-                const scripts = document.querySelectorAll('script[src*="recaptcha"]');
+                // Must have a real reCAPTCHA script/widget with render param, AND no
+                // visible widget. Match only genuine reCAPTCHA origins (not the
+                // `recaptchacompat=true` substring in hCaptcha iframe URLs).
+                if (document.querySelector('.g-recaptcha, .g-recaptcha-response, iframe[src*="google.com/recaptcha"], iframe[src*="recaptcha.net"], iframe[src*="gstatic.com/recaptcha"]')) return false;
+                const scripts = document.querySelectorAll('script[src*="google.com/recaptcha"], script[src*="recaptcha.net"], script[src*="gstatic.com/recaptcha"]');
                 for (const s of scripts) {
                     if (s.src.includes('render=')) return true;
                 }
@@ -221,9 +229,12 @@ class CaptchaSolver:
                 return cast(
                     str | None,
                     page.evaluate("""() => {
-                    let el = document.querySelector('.g-recaptcha, [data-sitekey]');
+                    // Only the reCAPTCHA widget carries its own sitekey. Do NOT fall
+                    // back to a bare [data-sitekey]: hCaptcha/Turnstile use that same
+                    // attribute, so a bare match would steal the wrong provider's key.
+                    let el = document.querySelector('.g-recaptcha[data-sitekey], .g-recaptcha');
                     if (el) return el.getAttribute('data-sitekey');
-                    for (const f of document.querySelectorAll('iframe')) {
+                    for (const f of document.querySelectorAll('iframe[src*="google.com/recaptcha"], iframe[src*="recaptcha.net"]')) {
                         const m = f.src.match(/[?&#]k=([A-Za-z0-9_-]+)/);
                         if (m) return m[1];
                     }
@@ -234,13 +245,14 @@ class CaptchaSolver:
                 return cast(
                     str | None,
                     page.evaluate(r"""() => {
-                    // reCAPTCHA v3 is loaded via grecaptcha.enterprise.execute or grecaptcha.execute
-                    const scripts = document.querySelectorAll('script[src*="recaptcha"]');
+                    // reCAPTCHA v3 is loaded via grecaptcha.execute on a real reCAPTCHA
+                    // script (only match genuine reCAPTCHA origins).
+                    const scripts = document.querySelectorAll('script[src*="google.com/recaptcha"], script[src*="recaptcha.net"], script[src*="gstatic.com/recaptcha"]');
                     for (const s of scripts) {
                         const m = s.src.match(/[?&]render=([A-Za-z0-9_-]+)/);
                         if (m) return m[1];
                     }
-                    // Check inline scripts
+                    // Check inline scripts (grecaptcha.execute is reCAPTCHA-specific)
                     for (const s of document.querySelectorAll('script')) {
                         const m = (s.textContent || '').match(/grecaptcha\.execute\(['"]([^'"]+)['"]/);
                         if (m) return m[1];
@@ -271,8 +283,48 @@ class CaptchaSolver:
 
     # ── Solving ──────────────────────────────────────────────────
 
-    def solve(self, captcha_type: str, sitekey: str, url: str) -> CaptchaResult:
-        """Submit a captcha to the configured provider and poll for the solved token."""
+    def solve(
+        self,
+        captcha_type: str,
+        sitekey: str,
+        url: str,
+        *,
+        useragent: str | None = None,
+        cookies: list[dict[str, Any]] | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> CaptchaResult:
+        """Submit a captcha to the configured provider and poll for the solved token.
+
+        Args:
+            captcha_type: One of the provider's supported types.
+            sitekey: Public site key of the captcha.
+            url: URL of the page hosting the captcha.
+            useragent: Real browser User-Agent to match the solve context.
+            cookies: Browser cookies (Playwright ``context.cookies()`` shape).
+            data: Captcha-type metadata (reCAPTCHA v3 ``action``/``s``/``theme``/
+                ``enterprise``; Turnstile ``action``/``cdata``).
+        """
+        if captcha_type == "turnstile":
+            if not self.proxy:
+                return CaptchaResult(
+                    success=False,
+                    captcha_type=captcha_type,
+                    error=(
+                        "turnstile requires a proxy: NopeCHA's schema marks proxy "
+                        "Required for this endpoint (the solver's exit IP must match "
+                        "the client's). Pass CaptchaSolver(proxy={...})."
+                    ),
+                )
+            if self.proxy.get("username") or self.proxy.get("password"):
+                scheme = self.proxy.get("scheme", "http")
+                if scheme not in ("http", "https"):
+                    import warnings
+
+                    warnings.warn(
+                        f"proxy scheme '{scheme}' ignores username/password; "
+                        "NopeCHA only supports proxy auth for http/https.",
+                        stacklevel=2,
+                    )
         return self._provider.solve(
             captcha_type,
             sitekey,
@@ -281,6 +333,9 @@ class CaptchaSolver:
             max_polls=self.max_polls,
             timeout_sec=self.timeout_sec,
             proxy=self.proxy,
+            useragent=useragent,
+            cookies=cookies,
+            data=data,
         )
 
     # ── Injection ────────────────────────────────────────────────
@@ -370,13 +425,24 @@ class CaptchaSolver:
 
     # ── Auto Flow ────────────────────────────────────────────────
 
-    def auto_solve(self, page: Any, click_checkbox: bool = True) -> list[CaptchaResult]:
+    def auto_solve(
+        self,
+        page: Any,
+        click_checkbox: bool = True,
+        clone_context: bool = True,
+    ) -> list[CaptchaResult]:
         """
         Detect → Solve → Inject all captchas on the page.
+
+        When ``clone_context`` is true (default), the page's real User-Agent and
+        cookies are forwarded to the provider so the token is minted in a context
+        matching the presenting browser — critical for evading token-context
+        binding checks (especially Turnstile / reCAPTCHA v3).
 
         Args:
             page: Playwright page object
             click_checkbox: Try to click captcha checkbox first
+            clone_context: Forward the browser's UA + cookies to the solver
 
         Returns:
             List of CaptchaResult for each captcha found.
@@ -384,11 +450,26 @@ class CaptchaSolver:
         results = []
         captchas = self.detect(page)
 
+        useragent = None
+        cookies = None
+        if clone_context:
+            useragent = self._page_useragent(page)
+            cookies = self._page_cookies(page)
+
         for cap in captchas:
             if click_checkbox and cap.get("frame"):
                 self._click_checkbox(cap)
 
-            result = self.solve(cap["type"], cap["sitekey"], cap["url"])
+            data = self._widget_data(page, cap["type"])
+
+            result = self.solve(
+                cap["type"],
+                cap["sitekey"],
+                cap["url"],
+                useragent=useragent,
+                cookies=cookies,
+                data=data,
+            )
 
             if result.success:
                 self.inject(page, cap["type"], result.token)
@@ -396,6 +477,53 @@ class CaptchaSolver:
             results.append(result)
 
         return results
+
+    def _page_useragent(self, page: Any) -> str | None:
+        """Read the live browser User-Agent from the page."""
+        try:
+            ua = page.evaluate("() => navigator.userAgent")
+            return str(ua) if ua else None
+        except Exception:
+            return None
+
+    def _page_cookies(self, page: Any) -> list[dict[str, Any]] | None:
+        """Read cookies for the page's URL from the browser context."""
+        try:
+            ctx = getattr(page, "context", None)
+            if ctx is None:
+                return None
+            cookies = ctx.cookies(page.url)
+            return list(cookies) if cookies else None
+        except Exception:
+            return None
+
+    def _widget_data(self, page: Any, captcha_type: str) -> dict[str, Any] | None:
+        """Extract type-specific metadata (data-action) from the live widget."""
+        try:
+            if captcha_type == "recaptcha3":
+                action = page.evaluate(
+                    """() => {
+                    const el = document.querySelector('[data-action]');
+                    return el ? el.getAttribute('data-action') : null;
+                }"""
+                )
+                return {"action": str(action)} if action else None
+            if captcha_type == "turnstile":
+                info = page.evaluate(
+                    """() => {
+                    const el = document.querySelector('.cf-turnstile, [data-sitekey]');
+                    if (!el) return null;
+                    return {
+                        action: el.getAttribute('data-action'),
+                        cdata: el.getAttribute('data-cdata'),
+                    };
+                }"""
+                )
+                if info and (info.get("action") or info.get("cdata")):
+                    return {k: v for k, v in info.items() if v}
+        except Exception:
+            pass
+        return None
 
     def _click_checkbox(self, cap: dict) -> None:
         try:

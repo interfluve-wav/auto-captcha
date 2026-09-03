@@ -10,7 +10,7 @@ from auto_captcha_solver.types import sanitize_detect_results
 def test_version():
     from auto_captcha_solver import __version__
 
-    assert __version__ == "0.1.5"
+    assert __version__ == "0.1.6"
 
 
 def test_supported_types():
@@ -104,6 +104,97 @@ def test_get_credits_failure(monkeypatch, solver):
     assert credits == 0
 
 
+def test_nopecha_body_sends_native_cookie_and_data(monkeypatch):
+    """NopeCHA docs: `cookie` is an ARRAY of cookie objects and `data` is a
+    native object. Capture the JSON payload and assert the documented shape
+    (native containers — NOT stringified)."""
+    captured = {}
+
+    def mock_request(method, url, headers=None, json=None, timeout=None, **kw):
+        captured["method"] = method
+        captured["body"] = json
+        return DummyResponse(200, {"data": "job-123"})
+
+    monkeypatch.setattr("auto_captcha_solver.providers.nopecha.requests.request", mock_request)
+    # max_polls=0 → submit returns immediately after the POST (no sleep).
+    s = CaptchaSolver(
+        api_key="k",
+        max_polls=0,
+        proxy={"scheme": "http", "host": "h", "port": 7777, "username": "u", "password": "p"},
+    )
+    s.solve(
+        "hcaptcha",
+        "sitekey-x",
+        "https://example.com",
+        useragent="UA/1.0",
+        cookies=[
+            {
+                "name": "a",
+                "value": "b",
+                "domain": "example.com",
+                "path": "/",
+                "expires": -1,
+            }
+        ],
+        data={"action": "submit"},
+    )
+
+    body = captured["body"]
+    # cookie + data must be native containers (per NopeCHA docs' examples).
+    assert isinstance(body["cookie"], list)
+    assert body["cookie"][0]["name"] == "a" and body["cookie"][0]["domain"] == "example.com"
+    assert body["cookie"][0]["session"] is True  # normalized session cookie flag
+    assert isinstance(body["data"], dict)
+    assert body["data"] == {"action": "submit"}
+    # core fields stay native
+    assert body["sitekey"] == "sitekey-x"
+    assert body["url"] == "https://example.com"
+    assert body["useragent"] == "UA/1.0"
+    assert body["proxy"]["host"] == "h"
+
+
+def test_describe_error_surfaces_diagnostic_type():
+    from auto_captcha_solver.providers.nopecha import describe_error
+
+    out = describe_error(10, "Invalid request", "Invalid proxy")
+    assert "Invalid request" in out and "type=Invalid proxy" in out
+    # message equal to the known default is not doubled
+    out2 = describe_error(14, "Incomplete job")
+    assert out2 == "Incomplete job"
+
+
+def test_turnstile_without_proxy_fails_fast(solver):
+    """NopeCHA marks proxy REQUIRED for turnstile — fail fast with a clear
+    message instead of a cryptic queue-level 'Invalid request'."""
+    result = solver.solve("turnstile", "0xabc", "https://example.com")
+    assert not result.success
+    assert "requires a proxy" in result.error
+
+
+def test_turnstile_with_proxy_proceeds(monkeypatch):
+    from auto_captcha_solver.providers.nopecha import NopechaProvider
+
+    class Captured:
+        body = None
+        submitted = False
+
+    def fake_api(self, path, method="GET", body=None):
+        if method == "POST":
+            self.body = body
+            self.submitted = True
+            return (200, {"data": "job-1"})
+        return (200, {"data": "0.token"})
+
+    monkeypatch.setattr(NopechaProvider, "_api", fake_api)
+    s = CaptchaSolver(
+        api_key="k",
+        max_polls=1,
+        proxy={"scheme": "http", "host": "h", "port": 7777, "username": "u", "password": "p"},
+    )
+    result = s.solve("turnstile", "0xabc", "https://example.com")
+    assert result.success and result.token == "0.token"
+
+
 def test_detect_returns_empty_list_on_no_captcha(monkeypatch, solver):
     """detect() should return [] when page has no captcha elements."""
 
@@ -149,8 +240,8 @@ def test_auto_solve_success_flow(monkeypatch, solver):
 
     monkeypatch.setattr(solver, "detect", fake_detect)
 
-    # Stub solve() → success
-    def fake_solve(captcha_type, sitekey, url):
+    # Stub solve() → success (auto_solve calls it with keyword args)
+    def fake_solve(captcha_type, sitekey, url, **kwargs):
         res = CaptchaResult(success=True, captcha_type=captcha_type, token="tok123", attempts=1)
         solver.inject(page, captcha_type, "tok123")
         return res

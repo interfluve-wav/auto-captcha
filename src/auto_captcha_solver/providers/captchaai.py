@@ -22,6 +22,20 @@ STABLE_METHODS = {
 EXPERIMENTAL_METHODS: dict[str, str] = {}
 
 
+def _cookie_header(cookies: list[dict[str, Any]] | None) -> str:
+    """Serialize cookies to 2Captcha's ``NAME:value;NAME2:value2`` format."""
+    if not cookies:
+        return ""
+    parts = []
+    for c in cookies:
+        name = c.get("name")
+        value = c.get("value")
+        if name is None or value is None:
+            continue
+        parts.append(f"{name}:{value}")
+    return ";".join(parts)
+
+
 def _proxy_fields(proxy: dict[str, Any] | None) -> dict[str, str]:
     if not proxy:
         return {}
@@ -51,11 +65,14 @@ class CaptchaAIProvider(CaptchaProvider):
         super().__init__(api_key)
 
     def get_credits(self) -> int:
-        response = requests.get(
-            f"{BASE_URL}/res.php",
-            params={"key": self.api_key, "action": "getbalance"},
-            timeout=30,
-        )
+        try:
+            response = requests.get(
+                f"{BASE_URL}/res.php",
+                params={"key": self.api_key, "action": "getbalance"},
+                timeout=30,
+            )
+        except requests.exceptions.RequestException:
+            return 0
         try:
             return int(float(response.text.strip()))
         except ValueError:
@@ -63,7 +80,10 @@ class CaptchaAIProvider(CaptchaProvider):
 
     def _submit(self, payload: dict[str, Any]) -> tuple[bool, str]:
         data = {"key": self.api_key, "json": 1, **payload}
-        response = requests.post(f"{BASE_URL}/in.php", data=data, timeout=30)
+        try:
+            response = requests.post(f"{BASE_URL}/in.php", data=data, timeout=30)
+        except requests.exceptions.RequestException as exc:
+            return False, f"network error: {exc}"
         try:
             body = response.json()
         except Exception:
@@ -75,20 +95,26 @@ class CaptchaAIProvider(CaptchaProvider):
 
     def _poll(self, task_id: str, poll_interval: float, max_polls: int) -> tuple[bool, str]:
         for _ in range(max_polls):
-            response = requests.get(
-                f"{BASE_URL}/res.php",
-                params={
-                    "key": self.api_key,
-                    "action": "get",
-                    "id": task_id,
-                    "json": "1",
-                },
-                timeout=30,
-            )
+            try:
+                response = requests.get(
+                    f"{BASE_URL}/res.php",
+                    params={
+                        "key": self.api_key,
+                        "action": "get",
+                        "id": task_id,
+                        "json": "1",
+                    },
+                    timeout=30,
+                )
+            except requests.exceptions.RequestException:
+                # Transient network glitch — keep polling (bounded by max_polls).
+                time.sleep(poll_interval)
+                continue
             try:
                 body = response.json()
             except Exception:
-                return False, f"invalid response: {response.text[:200]}"
+                time.sleep(poll_interval)
+                continue
 
             token = body.get("request")
             if token == "CAPCHA_NOT_READY":
@@ -110,6 +136,9 @@ class CaptchaAIProvider(CaptchaProvider):
         max_polls: int,
         timeout_sec: float,
         proxy: dict[str, Any] | None = None,
+        useragent: str | None = None,
+        cookies: list[dict[str, Any]] | None = None,
+        data: dict[str, Any] | None = None,
     ) -> CaptchaResult:
         start = time.time()
         method = STABLE_METHODS.get(captcha_type) or EXPERIMENTAL_METHODS.get(captcha_type)
@@ -140,7 +169,21 @@ class CaptchaAIProvider(CaptchaProvider):
 
         if captcha_type == "recaptcha3":
             payload["version"] = "v3"
-            payload["action"] = "verify"
+            payload["action"] = str((data or {}).get("action") or "verify")
+            min_score = (data or {}).get("min_score")
+            if min_score is not None:
+                payload["min_score"] = min_score
+        elif captcha_type == "turnstile" and data:
+            if data.get("action"):
+                payload["action"] = str(data["action"])
+            if data.get("cdata"):
+                payload["data"] = str(data["cdata"])
+
+        if useragent:
+            payload["userAgent"] = useragent
+        cookie_str = _cookie_header(cookies)
+        if cookie_str:
+            payload["cookies"] = cookie_str
 
         payload.update(_proxy_fields(proxy))
 

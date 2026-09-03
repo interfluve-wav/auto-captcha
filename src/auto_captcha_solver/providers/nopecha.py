@@ -21,6 +21,76 @@ EXPERIMENTAL_ENDPOINTS = {
     "turnstile": "/v1/token/turnstile",
 }
 
+# Error codes documented at https://nopecha.com/api-reference (error section)
+ERROR_MESSAGES = {
+    9: "Unknown error",
+    10: "Invalid request",
+    11: "Rate limit reached",
+    12: "Banned IP (free tier ineligible)",
+    14: "Incomplete job",
+    15: "Invalid key",
+    16: "Out of credit",
+    17: "Update required",
+    18: "Feature unavailable for current plan",
+}
+
+
+def describe_error(code: Any, message: str | None = None, type_: str | None = None) -> str:
+    """Human-readable description of a NopeCHA error.
+
+    The error body carries ``code`` + ``message`` + an optional diagnostic
+    ``type`` string describing the nature of the failure (e.g. ``"Invalid
+    type"``, ``"Invalid proxy"``). All three are surfaced so callers can
+    diagnose without re-reading raw responses.
+    """
+    known = ERROR_MESSAGES.get(code)
+    parts: list[str] = []
+    if message and message != known:
+        parts.append(message)
+    if type_:
+        parts.append(f"type={type_}")
+    detail = f" ({', '.join(parts)})" if parts else ""
+    return f"{known or f'error {code}'}{detail}"
+
+
+def _normalize_cookies(
+    cookies: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Convert Playwright ``context.cookies()`` output to NopeCHA cookie shape.
+
+    NopeCHA requires name/value/domain/path plus explicit boolean flags
+    (hostOnly/httpOnly/secure/session). Playwright supplies most of these;
+    we fill sane defaults and derive the ones it omits so the solve context
+    matches the presenting browser.
+    """
+    if not cookies:
+        return []
+    out: list[dict[str, Any]] = []
+    for c in cookies:
+        name = c.get("name")
+        value = c.get("value")
+        domain = c.get("domain")
+        if name is None or value is None or not domain:
+            continue
+        expires = c.get("expires", c.get("expirationDate", -1))
+        # Playwright uses -1 for session cookies; NopeCHA marks them via `session`.
+        is_session = expires in (-1, None) or (isinstance(expires, (int, float)) and expires < 0)
+        entry: dict[str, Any] = {
+            "name": str(name),
+            "value": str(value),
+            "domain": str(domain),
+            "path": str(c.get("path", "/")),
+            # host-only when the domain is not a leading-dot wildcard cookie
+            "hostOnly": bool(c.get("hostOnly", not str(domain).startswith("."))),
+            "httpOnly": bool(c.get("httpOnly", False)),
+            "secure": bool(c.get("secure", False)),
+            "session": bool(c.get("session", is_session)),
+        }
+        if not entry["session"] and isinstance(expires, (int, float)) and expires > 0:
+            entry["expirationDate"] = int(expires)
+        out.append(entry)
+    return out
+
 
 class NopechaProvider(CaptchaProvider):
     name = "nopecha"
@@ -36,13 +106,18 @@ class NopechaProvider(CaptchaProvider):
             "Content-Type": "application/json",
             "Authorization": f"Basic {self.api_key}",
         }
-        response = requests.request(
-            method,
-            f"{self.BASE_URL}{path}",
-            headers=headers,
-            json=body,
-            timeout=30,
-        )
+        try:
+            response = requests.request(
+                method,
+                f"{self.BASE_URL}{path}",
+                headers=headers,
+                json=body,
+                timeout=30,
+            )
+        except requests.exceptions.RequestException as exc:
+            # Network-level failure (timeout, DNS, connection) — surface it as a
+            # structured failure instead of crashing the caller.
+            return 0, {"error": "network", "message": str(exc)}
         try:
             return response.status_code, response.json()
         except Exception:
@@ -64,6 +139,9 @@ class NopechaProvider(CaptchaProvider):
         max_polls: int,
         timeout_sec: float,
         proxy: dict[str, Any] | None = None,
+        useragent: str | None = None,
+        cookies: list[dict[str, Any]] | None = None,
+        data: dict[str, Any] | None = None,
     ) -> CaptchaResult:
         start = time.time()
         endpoint = TOKEN_ENDPOINTS.get(captcha_type) or EXPERIMENTAL_ENDPOINTS.get(captcha_type)
@@ -78,18 +156,38 @@ class NopechaProvider(CaptchaProvider):
 
         body: dict[str, Any] = {"sitekey": sitekey, "url": url}
         if proxy:
+            # Docs: proxy is an OBJECT {scheme, host, port, username, password}
+            # (port int or str). Required for turnstile; credentials only make
+            # sense for http/https schemes (NopeCHA ignores them for socks4/5).
             body["proxy"] = proxy
+        if useragent:
+            body["useragent"] = useragent
+        # Docs: `cookie` is an ARRAY of cookie objects and `data` is a native
+        # object (see nopecha.com/api-reference + /formatting/cookie). Send
+        # native JSON — never stringified.
+        normalized_cookies = _normalize_cookies(cookies)
+        if normalized_cookies:
+            body["cookie"] = normalized_cookies
+        if data:
+            body["data"] = data
 
-        status, data = self._api(endpoint, "POST", body)
-        if status != 200 or not data.get("data"):
+        status, resp = self._api(endpoint, "POST", body)
+        if status != 200 or not resp.get("data"):
+            if resp.get("error") == "network":
+                error = f"submit failed (network): {resp.get('message', '')}"
+            else:
+                # The error body carries a diagnostic `type` field describing
+                # the nature of the failure (e.g. "Invalid type", "Invalid
+                # proxy") — surface it so misdiagnosis is visible.
+                error = f"submit failed: {describe_error(resp.get('error'), resp.get('message'), resp.get('type'))}"
             return CaptchaResult(
                 success=False,
                 captcha_type=captcha_type,
-                error=f"submit failed: {data}",
+                error=error,
                 elapsed_sec=time.time() - start,
             )
 
-        job_id = data["data"]
+        job_id = resp["data"]
         for attempt in range(max_polls):
             if time.time() - start > timeout_sec:
                 break
@@ -100,11 +198,15 @@ class NopechaProvider(CaptchaProvider):
             err = result.get("error")
             if err == 14:
                 continue
+            if err == "network":
+                # Transient network glitch during polling — try again (bounded
+                # by max_polls / timeout_sec).
+                continue
             if err:
                 return CaptchaResult(
                     success=False,
                     captcha_type=captcha_type,
-                    error=f"error {err}: {result.get('message', '')}",
+                    error=describe_error(err, result.get("message"), result.get("type")),
                     attempts=attempt + 1,
                     elapsed_sec=time.time() - start,
                 )
@@ -123,7 +225,7 @@ class NopechaProvider(CaptchaProvider):
         return CaptchaResult(
             success=False,
             captcha_type=captcha_type,
-            error="timeout",
+            error=f"timeout after {timeout_sec:.0f}s",
             attempts=max_polls,
             elapsed_sec=time.time() - start,
         )

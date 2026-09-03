@@ -31,8 +31,27 @@ class CaptchaProvider(ABC):
         max_polls: int,
         timeout_sec: float,
         proxy: dict[str, Any] | None = None,
+        useragent: str | None = None,
+        cookies: list[dict[str, Any]] | None = None,
+        data: dict[str, Any] | None = None,
     ) -> CaptchaResult:
-        """Solve a captcha and return the token."""
+        """Solve a captcha and return the token.
+
+        Args:
+            captcha_type: One of the provider's supported types.
+            sitekey: Public site key of the captcha.
+            url: URL of the page hosting the captcha.
+            poll_interval: Seconds between result polls.
+            max_polls: Maximum number of poll attempts.
+            timeout_sec: Overall wall-clock budget for the solve.
+            proxy: Optional proxy dict (scheme/host/port/username/password).
+            useragent: Real browser User-Agent to match the solve context.
+            cookies: Browser cookies (Playwright ``context.cookies()`` shape)
+                so the solve context matches the presenting browser.
+            data: Captcha-type metadata (e.g. reCAPTCHA v3 ``action``/``s``,
+                Turnstile ``action``/``cdata``). Ignored by providers that
+                don't support it.
+        """
 
     @classmethod
     @abstractmethod

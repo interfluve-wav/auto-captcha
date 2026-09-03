@@ -77,8 +77,43 @@ with smart_page(api_key="your-key") as page:
 | hCaptcha (checkbox) | `/v1/token/hcaptcha` | Working |
 | hCaptcha (enterprise) | `/v1/token/hcaptcha` | Working |
 | reCAPTCHA v2 | `/v1/token/recaptcha2` | Works but queue can be slow |
-| reCAPTCHA v3 | Not supported | — |
-| Cloudflare Turnstile | Not supported | — |
+| reCAPTCHA v3 | `/v1/token/recaptcha3` | Working (needs `data.action`) |
+| Cloudflare Turnstile | `/v1/token/turnstile` | Working **with a proxy** — proxy is **Required** in NopeCHA's schema for this endpoint (solver exit IP must match browser IP); `check_proxy_egress()` / CLI `proxy-check` verify first. Error 10 bodies carry a diagnostic `type` field, now surfaced in the error string. |
+
+## Stealth & Context Cloning (v0.1.6)
+
+`apply_stealth(context)` masks the in-page headless leaks (`navigator.webdriver`,
+`window.chrome`, `navigator.plugins`, WebGL vendor string). Call right after
+`browser.new_context(...)`.
+
+```python
+from auto_captcha_solver import CaptchaSolver, apply_stealth
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.launch()
+    context = browser.new_context()
+    apply_stealth(context)          # mask fingerprint
+    page = context.new_page()
+    solver = CaptchaSolver(api_key="your-key")
+    results = solver.auto_solve(page)   # clones UA + cookies automatically
+```
+
+`auto_solve(..., clone_context=True)` (default) forwards the browser's real
+User-Agent and cookies to NopeCHA so the token is minted in a context matching
+the presenting browser. Turnstile solves without a proxy emit a warning, because
+Cloudflare requires the solver IP to match the client IP.
+
+## Turnkey Autopilot
+
+```python
+from auto_captcha_solver import auto_solve_url
+
+report = auto_solve_url("https://site.com", api_key="key", stealth=True)
+print(report.summary)   # "https://site.com — hcaptcha:OK"
+# proxy_pool=[...] + round_robin_rotator rotate proxies per session;
+# auto_solve_page(page, solver) solves captchas on a page you already own.
+```
 
 ## NopeCHA API Details
 

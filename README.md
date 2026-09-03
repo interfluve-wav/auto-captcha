@@ -124,6 +124,106 @@ if result.success:
     solver.inject(page, "hcaptcha", result.token)
 ```
 
+## Stealth & Context Cloning
+
+Token solves are minted server-side by the provider, so the token's *context*
+(IP, User-Agent, cookies) must match the browser that presents it — otherwise
+anti-bot systems (especially Cloudflare Turnstile) invalidate it on submit.
+
+**`apply_stealth(context)`** masks the in-page fingerprint leaks a vanilla
+headless Chromium exposes (`navigator.webdriver`, missing `window.chrome`,
+empty `navigator.plugins`, SwiftShader WebGL vendor). Call it once on the
+`BrowserContext`, before creating pages:
+
+```python
+from auto_captcha_solver import CaptchaSolver, apply_stealth
+with sync_playwright() as p:
+    browser = p.chromium.launch()
+    context = browser.new_context()   # or use your real profile
+    apply_stealth(context)            # mask fingerprint
+    page = context.new_page()
+    solver = CaptchaSolver(api_key="your-key")
+    results = solver.auto_solve(page) # UA + cookies cloned automatically
+```
+
+**`clone_context(page)`** snapshots the browser's real User-Agent and cookies so
+you can forward them to `solve()`:
+
+```python
+from auto_captcha_solver import clone_context
+ctx = clone_context(page)  # {"useragent": str|None, "cookies": list|None}
+result = solver.solve("hcaptcha", sitekey, page.url, **ctx)
+```
+
+- `auto_solve(..., clone_context=True)` (default) forwards the live UA + cookies
+  and reads `data-action`/`data-cdata` off the widget for reCAPTCHA v3 /
+  Turnstile metadata.
+- **Turnstile requires a proxy** whose IP matches the client's — `solve()`
+  emits a warning if you call it without `proxy=...`.
+- The `Runtime.enable` CDP leak (below the JS layer) is closed only by driving
+  the browser with [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python)
+  — a drop-in Playwright fork. `apply_stealth` stacks cleanly on top of it.
+
+## Turnkey Auto-Solve (Autopilot)
+
+`auto_solve_*` helpers wrap the full detect → solve → inject pipeline into a
+single call. They wait for captchas that render late, clone the browser context,
+and support proxy rotation.
+
+```python
+from auto_captcha_solver import auto_solve_url
+
+report = auto_solve_url(
+    "https://some-login-form.com",
+    api_key="your-key",
+    stealth=True,          # mask headless fingerprint
+    proxy={"scheme": "http", "host": "your-residential-ip", "port": 7777},
+)
+print(report.summary)   # "https://... — hcaptcha:OK"
+print(report.solved)    # True
+```
+
+**Rotating proxies** (e.g. Novada) — pass a pool; one proxy is picked per session
+and used for BOTH browser egress and the solve request, so the token IP always
+matches the browser IP (required for token validity):
+
+```python
+from auto_captcha_solver import auto_solve_url, round_robin_rotator
+
+proxies = [
+    {"scheme": "http", "host": "p1.novada.example", "port": 7777, "username": "u", "password": "p"},
+    {"scheme": "http", "host": "p2.novada.example", "port": 7777, "username": "u", "password": "p"},
+]
+report = auto_solve_url("https://site.com", api_key="k", proxy_pool=proxies)
+```
+
+**Remote / hosted browsers** (Browserless, Steel, or any CDP endpoint) — pass
+`cdp_url` to drive an existing browser instead of launching one. The function
+opens a fresh context on the remote browser, solves, and closes that context
+without killing the remote session:
+
+```python
+from auto_captcha_solver import auto_solve_url
+
+report = auto_solve_url(
+    "https://site.com",
+    api_key="your-key",
+    cdp_url="https://<token>.browserless.io?token=***",   # or wss:// Steel endpoint
+    # connect_kwargs={"headers": {"Authorization": "Bearer <token>"}},  # if needed
+    # proxy={"scheme": "http", "host": "remote-egress-ip", "port": 7777},
+    #   ↑ forward the remote browser's egress IP to the solver — the token's IP
+    #     must match the client IP or Turnstile/reCAPTCHA v3 will invalidate it.
+)
+```
+
+In CDP mode the browser's egress is fixed by the host (you can't re-route it),
+so match it with `proxy` for the solve request. Local mode does this
+automatically: `proxy` drives both the launched browser and the solver.
+
+Wire it into a page you already own with `auto_solve_page(page, solver)` — it
+polls for late-rendering widgets (safer than waiting for `networkidle`, which
+Turnstile pages never reach) and solves every challenge on it.
+
 ## CLI Usage
 
 ```bash
@@ -135,9 +235,18 @@ auto-captcha detect --url https://example.com
 
 # Auto-solve
 auto-captcha solve --url https://example.com --key $NOPECHA_API_KEY
+
+# Drive a remote/hosted browser over CDP (Browserless / Steel)
+auto-captcha solve --url https://example.com --cdp-url "https://<token>.browserless.io?token=***"
+auto-captcha detect --url https://example.com --cdp-url "wss://steel-endpoint" --cdp-header "Authorization: Bearer <token>"
+
+# Proxy (REQUIRED for Turnstile / reCAPTCHA v3 — solver IP must match browser IP)
+auto-captcha solve --url https://turnstile-page.com --proxy-url "http://user:pass@host:7777"
+auto-captcha solve --url https://turnstile-page.com            # or: --proxy/--proxy-port/--proxy-user/--proxy-pass, or NOVADA_* env
+auto-captcha proxy-check --proxy-url "http://user:pass@host:7777"   # verify proxy + show egress IP (no API key)
 ```
 
-Results are JSON lines by default; use `--pretty` for formatted output.
+Results are printed as formatted JSON.
 
 ## MCP Server
 
@@ -148,7 +257,7 @@ Exposes captcha solving as MCP tools for AI agents (Claude Code, Cursor, etc.):
 export NOPECHA_API_KEY="your-key"
 
 # Run as MCP server
-python -m auto_captcha.mcp_server
+python -m auto_captcha_solver.mcp_server
 ```
 
 Then register in your client config:
@@ -158,7 +267,7 @@ Then register in your client config:
   "mcpServers": {
     "auto-captcha": {
       "command": "python",
-      "args": ["-m", "auto_captcha.mcp_server"],
+      "args": ["-m", "auto_captcha_solver.mcp_server"],
       "env": {"NOPECHA_API_KEY": "your-key"}
     }
   }
